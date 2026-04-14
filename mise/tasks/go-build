@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#MISE description="Build a Go binary with version stamping and release flags"
+#MISE alias="build"
+#
+# Usage (run from the Go project directory):
+#   mise run go-build              # binary named after current directory
+#   mise run go-build mybinary     # explicit binary name
+#
+# Tagging convention for monorepo (one tag namespace per tool):
+#   git tag openconnect-slop/v0.1.0
+#   cd tools/openconnect-slop && mise run go-build
+#   → building openconnect-slop  (v0.1.0  abc1234  ...)
+#
+# Flags applied to every build:
+#   -trimpath          strips local filesystem paths from the binary
+#   -s -w              strips symbol table and DWARF debug info
+#   -X main.version    from git describe (prefix stripped)
+#   -X main.commit     short git hash
+#   -X main.buildDate  UTC ISO-8601 timestamp
+
+set -euo pipefail
+
+cd "$MISE_ORIGINAL_CWD"
+
+BINARY="${1:-$(basename "$MISE_ORIGINAL_CWD")}"
+
+# Sanity checks
+if [[ ! -f "go.mod" ]]; then
+  echo "error: no go.mod found in $MISE_ORIGINAL_CWD — run from a Go project directory" >&2
+  exit 1
+fi
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "error: not inside a git repository" >&2
+  exit 1
+fi
+if [[ -z "$BINARY" ]]; then
+  echo "error: could not determine binary name (empty directory name?)" >&2
+  exit 1
+fi
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Look for tags prefixed with the binary name (e.g. openconnect-slop/v0.1.0).
+# Strip the prefix so the embedded version string is clean (v0.1.0, not openconnect-slop/v0.1.0).
+RAW_VERSION=$(git describe --tags --always --dirty --match "${BINARY}/*" 2>/dev/null || echo "")
+if [[ -n "$RAW_VERSION" ]]; then
+  VERSION="${RAW_VERSION#"${BINARY}/"}"
+else
+  # No matching tag — fall back to plain commit hash (+ -dirty if needed)
+  VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+fi
+
+echo "building $BINARY  ($VERSION  $COMMIT  $BUILD_DATE)"
+
+go build -trimpath \
+  -ldflags="-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.buildDate=$BUILD_DATE" \
+  -o "$BINARY" .
+
+ls -lahF --color "$BINARY"
